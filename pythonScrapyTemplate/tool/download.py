@@ -8,7 +8,7 @@ import threading
 
 import requests
 
-from kenshu.tool.file import fileTool
+from pythonScrapyTemplate.tool.file import fileTool
 from urllib.parse import quote
 import string
 FLAG = 'queue_flag_const'

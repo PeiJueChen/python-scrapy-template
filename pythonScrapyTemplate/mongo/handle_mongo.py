@@ -25,7 +25,7 @@ class Handle_mongo(object):
             return
 
         xxxxId = item['xxxxId']
-        if not bookId:
+        if not xxxxId:
             print("missing xxxxId",item)
             return
         # 根据id 去更新
