@@ -1,0 +1,1 @@
+python3 ./pythonScrapyTemplate/main.py
