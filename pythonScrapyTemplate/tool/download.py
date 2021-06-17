@@ -9,6 +9,8 @@ import threading
 import requests
 from urllib.parse import quote
 import string
+from contextlib import closing
+
 
 class File(object):
     def writeFile(self, content, name="1.html"):
@@ -37,17 +39,55 @@ class File(object):
     def getCurrentFilePath():
         return os.path.dirname(os.path.dirname(__file__))
 
+
 fileTool = File()
+
+
+class ProgressBar(object):
+
+    def __init__(self, title,
+                 count=0.0,
+                 run_status=None,
+                 fin_status=None,
+                 total=100.0,
+                 unit='', sep='/',
+                 chunk_size=1.0):
+        super(ProgressBar, self).__init__()
+        self.info = "【%s】%s %.2f %s %s %.2f %s"
+        self.title = title
+        self.total = total
+        self.count = count
+        self.chunk_size = chunk_size
+        self.status = run_status or ""
+        self.fin_status = fin_status or " " * len(self.status)
+        self.unit = unit
+        self.seq = sep
+
+    def __get_info(self):
+        # 【名称】状态 进度 单位 分割线 总数 单位
+        _info = self.info % (self.title, self.status,
+                             self.count/self.chunk_size, self.unit, self.seq, self.total/self.chunk_size, self.unit)
+        return _info
+
+    def refresh(self, count=1, status=None):
+        self.count += count
+        # if status is not None:
+        self.status = status or self.status
+        end_str = "\r"
+        if self.count >= self.total:
+            end_str = '\n'
+            self.status = status or self.fin_status
+        print(self.__get_info(), end=end_str)
 
 
 FLAG = 'queue_flag_const'
 
+
 class Crawl_thread(threading.Thread):
-    def __init__(self, thread_name, queues_, itemInfo, queue_flag, download_method) -> None:
+    def __init__(self, thread_name, queues_, queue_flag, download_method) -> None:
         super(Crawl_thread, self).__init__()
         self.thread_name = thread_name
         self.queues_ = queues_
-        self.itemInfo = itemInfo
         self.queue_flag = queue_flag
         self.download_method = download_method
 
@@ -57,13 +97,12 @@ class Crawl_thread(threading.Thread):
         while self.queue_flag[FLAG] == False:
             try:
                 # 通过get方法，将里面的imageurlget出来,get为空的时候，抛异常
-                url = self.queues_.get(block=False)
-                # name = self.carInfo['author']
-                self.download_method(self.itemInfo, url)
+                urlObject = self.queues_.get(block=False)
+                self.download_method(urlObject)
                 # 可能停1秒
                 sleep(random.randint(0, 1))
-            except:
-                print("except...")
+            except Exception as e:
+                print("except...", e)
                 pass
 
 
@@ -117,29 +156,44 @@ class DownloadTask(object):
         except:
             pass
 
-    def downloadFile(self, item, url):
-        if not url or not item:
-            print('missing url or carId')
+    def downloadFile(self, urlObject):
+        """
+            urlObject: {
+                url: xxx, (required)
+                folderName:xxx, (optional)
+                fileName:xxx (required)
+            }
+        """
+        if not urlObject:
+            print('missing urlObject')
             return
 
-        # set多层路径 xxx/author/name
-        author = item['author']
-        # fileName = item['name'] + '.png'
-        # 请自行添加后缀
-        fileName = item['name']
+        urlObject = dict(urlObject)
+        folderName = urlObject.get("folderName", "")
+
+        url = urlObject.get('url', None)
+        fileName = urlObject.get("fileName", None)
+
+        if not url or not fileName:
+            print("missing url or filename")
+            return
 
         path_ = os.path.join(os.path.dirname(
             os.path.dirname(__file__)), 'download-files')
-        itemPath = os.path.join(path_, author)
+        itemPath = path_
+
+        if folderName and len(folderName) > 0:
+            itemPath = os.path.join(path_, folderName)
+
         fileTool.create_dir(itemPath)
+
         itemFullPath = os.path.join(itemPath, fileName)
         if fileTool.isExist(itemFullPath):
             print('fileName:%s is exist' % (fileName))
             return
 
-        print('begin download:%s' % (fileName))
         try:
-
+            print('%s >>> Start Downloading...' % (fileName))
             # 因担心url 中有中文
             url = quote(url, safe=string.printable)
 
@@ -148,45 +202,54 @@ class DownloadTask(object):
             # self.addAgent(self.agent)
             # urlretrieve(url=url, filename=itemFullPath, reporthook=self.reporthook)
 
+            # 单次请求最大值
+            chunk_size = 1024
             # 300s
-            r = requests.get(url, stream=True, timeout=300)
-            f = open(itemFullPath, "wb")
-            # chunk是指定每次写入的大小，每次只写了200byte
-            try:
-                for chunk in r.iter_content(chunk_size=200):
-                    if chunk:
-                        f.write(chunk)
-                        f.flush()
-            except Exception as e1:
-                print("write error:", e1)
-            finally:
-                f.close()
-                r.close()
-                print('end download:%s' % (fileName))
+            timeout = 300
+            with closing(requests.get(url, stream=True, timeout=timeout)) as response:
+                # 内容体总大小
+                content_size = int(response.headers['content-length'])
+                progress = ProgressBar(fileName, total=content_size, unit="KB", chunk_size=chunk_size, run_status="正在下载", fin_status="下载完成")
+                with open(itemFullPath, "wb") as file:
+                    for data in response.iter_content(chunk_size=chunk_size):
+                        file.write(data)
+                        file.flush()
+                        progress.refresh(count=len(data))
+
+            print('%s >>> End Downloading...' % (fileName))
 
         except Exception as e:
             print('download error:', e)
             pass
 
-    def downloadItems(self, itemInfo, urlKey):
-        if not itemInfo or not urlKey:
+    def downloadItems(self, urlObjects):
+        """
+            urlObjects : [{
+                url: xxx, (required)
+                folderName:xxx, (optional)
+                fileName:xxx (required)
+            }]
+        """
+        if not urlObjects:
+            print('missing urlObjects')
             return
-        urls = itemInfo[urlKey]
-        if not urls or len(urls) == 0:
-            print('urls the len is 0')
+        # urls = itemInfo[urlKey]
+        if len(urlObjects) == 0:
+            print('urlObjects the len is 0')
             return
 
-        self.setupQueue(urls, itemInfo)
+        self.setupQueue(urlObjects)
 
-    def setupQueue(self, urls, itemInfo):
+    def setupQueue(self, urlObjects):
         # 开启队列
         task_queues = Queue()
 
-        for url in urls:
+        for url in urlObjects:
             task_queues.put(url)
+
         crawl_urls_list = ["Task处理线程1号", "Task处理线程2号", "Task处理线程3号"]
 
-        urlsLength = len(urls)
+        urlsLength = len(urlObjects)
         if urlsLength < 3:
             crawl_urls_list.clear()
             for i in range(urlsLength):
@@ -196,7 +259,7 @@ class DownloadTask(object):
         url_thread_list = []
         for url_thread in crawl_urls_list:
             thread_ = Crawl_thread(
-                url_thread, task_queues, itemInfo, self.queue_flag, self.downloadFile)
+                url_thread, task_queues, self.queue_flag, self.downloadFile)
             # 启动线程
             thread_.start()
             url_thread_list.append(thread_)
@@ -211,11 +274,11 @@ class DownloadTask(object):
             thread_join.join()
             print(thread_join.thread_name, ': 处理结束')
 
+
 # USE
-# item = {"author": 'author1', 'name': 'filename.png'}
-# urls = '表示item 中哪个属性保存着urls: 比如: fileUrls'
-# DownloadTask().downloadItems(item, urls)
-
-
-# DownloadTask().downloadFile({'author': 'test', 'name': 'test3'},'https://api.pjue.top/uploads/mdImages/1601994125093.png')
-
+# urls = [{
+#     "url": 'https://api.pjue.top/uploads/mdImages/1601994125093.png',
+#     'fileName': '1601994125092.png',
+#     "folderName": 'pnpn'
+# }]
+# DownloadTask().downloadItems(urls)
